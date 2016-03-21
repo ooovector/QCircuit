@@ -1,3 +1,7 @@
+"""
+A simple Python module to obtain energy levels of superconducting qubits by sparse Hamiltonian diagonalization.
+"""
+
 import numpy as np
 from scipy.sparse.linalg import *
 from abc import ABCMeta
@@ -8,14 +12,30 @@ class QCircuitNode:
         self.name = name
 
 class QVariable:
+    """
+    Represents a variable of the circuit wavefunction or an constant external bias flux or charge.
+    """
+    
     def __init__(self, name):
         self.name = name
     def create_grid(self, nodeNo, phase_periods):
+        """
+        Creates a discrete grid for wavefunction variables.
+        :param nodeNo: number of discrete points on the grid
+        :param phase_periods: number of 2pi intervals in the grid
+        """
+        
         minNode = np.round(-(nodeNo-1)/2)
         maxNode = np.round((nodeNo-1)/2)
         self.phase_grid = np.linspace(-np.pi*phase_periods, np.pi*phase_periods, nodeNo, endpoint=False)
         self.charge_grid = np.linspace(minNode, maxNode, nodeNo)
     def set_parameter(self, phase_value, charge_value):
+        """
+        Sets an external flux and/or charge bias.
+        :param phase_value: external flux bias in flux quanta/(2pi)
+        :param charge_value: external charge bias in cooper pairs
+        """
+        
         self.phase_grid = phase_value
         self.charge_grid = charge_value
     def get_phase_grid(self):
@@ -24,22 +44,25 @@ class QVariable:
         return self.charge_grid
 
 class QCircuitElement:
+    """
+    Abstract class for circuit elements. All circuit elements defined in the QCircuit library derive from this base class.
+    """
+    
     __metaclass__ = ABCMeta
     def __init__(self, name):
         self.name = name
-    @abstractmethod
-    def energy_term(self, node_phases, node_charges):
-        pass
     @abstractmethod
     def is_phase(self):
         pass
     @abstractmethod
     def is_charge(self):
         pass
-    def is_diagonal(self):
-        pass
         
 class QCapacitance(QCircuitElement):
+    """
+    Circuit element representing a capacitor.
+    """
+    
     def __init__(self, name, capacitance=0):
         self.name = name
         self.capacitance = capacitance
@@ -53,6 +76,9 @@ class QCapacitance(QCircuitElement):
         return True
 
 class QJosephsonJunction(QCircuitElement):
+    """
+    Circuit element representing a Josephson junction.
+    """
     def __init__(self, name, critical_current=0):
         self.name = name
         self.critical_current = critical_current
@@ -71,6 +97,9 @@ class QJosephsonJunction(QCircuitElement):
         return False
     
 class QInductance(QCircuitElement):
+    """
+    Circuit element representing a linear inductor.
+    """
     def __init__(self, name, inductance=0):
         self.name = name
         self.inductance = inductance
@@ -89,7 +118,14 @@ class QInductance(QCircuitElement):
         return False
     
 class QCircuit:
+    """
+    The class containing references to nodes, elements, variables, variable-to-node mappings.
+    """
     def __init__(self, tolerance=1e-18):
+        """
+        Default constructor.
+        :param tolerance: capacitances below this value are considered to be computational errors when determining the inverse capacitance matrix.
+        """
         self.nodes = [QCircuitNode('GND')]
         self.elements = []
         self.wires = []
@@ -99,16 +135,28 @@ class QCircuit:
         self.tolerance = tolerance
         
     def find_element(self, element_name):
+        """
+        Find an element inside the circuit with the specified name.
+        :returns: the element, if found
+        """
         for element in self.elements:
             if element.name == element_name:
                 return element
             
     def find_variable(self, variable_name):
+        """
+        Find a variable of the circuit with the specified name.
+        :returns: the variable, if found
+        """
         for variable in self.variables:
             if variable.name == variable_name:
                 return variable
         
     def add_element(self, element, node_names=[]):
+        """
+        Connect an element to the circuit.
+        :param node_name: list of names of the nodes to which the element should be connected. The nodes are connected in the order of the list.
+        """
         self.elements.append(element)
         for node_name in node_names:
             nodes_found = 0
@@ -126,6 +174,12 @@ class QCircuit:
         self.invalidation_flag = True
         
     def map_nodes_linear(self, node_names, variable_names, coefficients):
+        """
+        Sets the value of node phases (and, respectively, their conjugate charges) as a linear combination of the circuit variables.
+        :param node_names: the names of the nodes to be expressed through the variables, in the order of the coefficient matrix rows.
+        :param variable_names: the variables to express the node phases through, in the order of the coefficient matrix columns.
+        :param coefficients: the transfrmation matrix
+        """
         node_ids = []
         variable_ids = []
         for node_name in node_names:
@@ -149,6 +203,9 @@ class QCircuit:
         self.invalidation_flag = True
         
     def create_phase_grid(self):
+        """
+        Creates a n-d grid of the phase variables, where n is the number of variables in the circuit, on which the circuit wavefunction depends.
+        """
         self.invalidation_flag = True
         axes = []
         for variable in self.variables:
@@ -156,6 +213,9 @@ class QCircuit:
         return np.meshgrid(*tuple(axes))
         
     def create_charge_grid(self):
+        """
+        Creates a n-d grid of the charge variables, where n is the number of variables in the circuit, on which the circuit wavefunction, when transformed into charge representation, depends.
+        """
         self.invalidation_flag = True
         axes = []
         for variable in self.variables:
@@ -163,20 +223,23 @@ class QCircuit:
         return np.meshgrid(*tuple(axes))
         
     def hamiltonian_phase_action(self, state_vector):
+        """
+        Implements the action of the hamiltonian on the state vector describing the system in phase representation.
+        :param state_vector: wavefunction to act upon
+        :returns: wavefunction after action of the hamiltonian
+        """
         psi = np.reshape(state_vector, self.charge_potential.shape)
         phi = np.fft.fftshift(np.fft.fftn(np.fft.fftshift(psi)))
         Up = self.phase_potential.ravel()*state_vector
         Tp = np.fft.ifftshift(np.fft.ifftn(np.fft.ifftshift(self.charge_potential*phi))).ravel()
         return Up+Tp
-        
-    def hamiltonian_charge_action(self, state_vector):
-        phi = np.reshape(state_vector, self.charge_potential.shape)
-        psi = np.fft.ifftshift(np.fft.ifftn(np.fft.ifftshift(phi)))
-        Up = self.charge_potential.ravel()*state_vector
-        Tp = np.fft.fftshift(np.fft.fftn(np.fft.fftshift(self.phase_potential*psi))).ravel()
-        return Up+Tp    
     
     def capacitance_matrix(self):
+        """
+        Calculates the linear capacitance matrix of the circuit with respect 
+        to the circuit nodes from the capacitances between them.
+        :returns: the capacitance matrix with respect to the nodes, where the rows and columns are sorted accoring to the order in which the nodes are in the nodes attribute.
+        """
         capacitance_matrix = np.zeros((len(self.nodes), len(self.nodes)))
         for element in self.elements:
             if element.is_charge():
@@ -195,6 +258,11 @@ class QCircuit:
                 capacitance_matrix[element_node_ids[1], element_node_ids[1]] += element.get_capacitance()/2
         return capacitance_matrix
     def inverse_capacitance_matrix(self):
+        """
+        Calculates the inverse of the capacitance matrix. 
+        Since the capacitance matrix is always at least once degenerate, 
+        the infinite eigenvalues of this matrix are replaced with zero eigenvalues.
+        """
         E,V = np.linalg.eigh(self.capacitance_matrix())
         for eigencapacitance_id, eigencapacitance in enumerate(E):
             if np.abs(eigencapacitance)>self.tolerance:
@@ -202,6 +270,12 @@ class QCircuit:
         return np.einsum('mj,j,lj->ml', np.conj(V), E, V)
                 
     def calculate_potentials(self):    
+        """
+        Calculates the potential landspace of the circuit hamiltonian in phase and charge representation. 
+        For circuits containing only linear capacitances, the hamiltonian can be seprated into two summands, 
+        one of which is diagonal in phase representation, and the other - in charge representation.
+        :returns: the two potential landscapes, on the wavefunction grid.
+        """
         phase_grid = self.create_phase_grid()
         charge_grid = self.create_charge_grid()
         grid_shape = phase_grid[0].shape
@@ -235,6 +309,10 @@ class QCircuit:
         return self.charge_potential, self.phase_potential
     
     def diagonalize_phase(self, num_states=2, use_sparse=True):
+        """Performs sparse diagonalization of the circuit hamiltonian.
+        :param: number of states, starting from the ground state, to be obtained.
+        :returns: energies and wavefunctions of the first num_states states.
+        """
         energies, wavefunctions = eigs(self.hamiltonian_phase, k=num_states, which='SR')
         energy_order = np.argsort(np.real(energies))
         energies = energies[energy_order]
