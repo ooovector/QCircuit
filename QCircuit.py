@@ -47,16 +47,9 @@ class QCapacitance(QCircuitElement):
         self.capacitance = capacitance
     def get_capacitance(self):
         return self.capacitance
-    def energy_term(self, node_phases, node_charges):
-        if len(node_charges) != 2:
-            raise Exception('ConnectionError', 
-                            'Capacitor {0} has {1} nodes connected instead of 2.'.format(self.name, len(node_charges)))
-        return (node_charges[0]-node_charges[1])**2/(2*self.capacitance)
     def is_phase(self):
         return False
     def is_charge(self):
-        return True
-    def is_diagonal(self):
         return True
 
 class QJosephsonJunction(QCircuitElement):
@@ -76,8 +69,6 @@ class QJosephsonJunction(QCircuitElement):
         return True
     def is_charge(self):
         return False
-    def is_diagonal(self):
-        return True
     
 class QInductance(QCircuitElement):
     def __init__(self, name, inductance=0):
@@ -96,39 +87,7 @@ class QInductance(QCircuitElement):
         return True
     def is_charge(self):
         return False
-    def is_diagonal(self):
-        return True
     
-class QSubcircuit(QCircuitElement):
-    def __init(self, name, subcircuit, mode):
-        self.name = name
-        self.subcircuit = subcircuit
-        self.mode = mode
-    def set_subcircuit(self, subcircuit):
-        self.subcircuit = subcircuit
-    def get_subcircuit(self, subcircuit):
-        return self.subcircuit
-    def setup_Hilbert_space(self, ranges, step_nums):
-        self.Hilbert_space = Hilbert_space
-        if (self.mode == 'phase'):
-            pass 
-        else:
-            pass
-    def Hamiltonian_action(self, state_vector):
-        pass
-    def is_phase(self):
-        if (self.mode == 'phase'):
-            return True
-        else:
-            return False
-    def is_charge(self):
-        if (self.mode == 'charge'):
-            return True
-        else:
-            return False
-    def is_fast(self):
-        return False
-
 class QCircuit:
     def __init__(self, tolerance=1e-18):
         self.nodes = [QCircuitNode('GND')]
@@ -217,18 +176,6 @@ class QCircuit:
         Tp = np.fft.fftshift(np.fft.fftn(np.fft.fftshift(self.phase_potential*psi))).ravel()
         return Up+Tp    
     
-    def hamiltonian_setup_action_factorized(self, factor_variables, linear_factor_id, 
-                                            quadratic_factors_wavefunctions_phase_f, 
-                                            quadratic_factors_wavefunctions_phase_i):
-        self.wavefunction_factors = factor_variables
-        self.quadratic_factors_wavefunctions_phase_f = quadratic_factors_wavefunctions_phase_f
-        self.quadratic_factors_wavefunctions_phase_i = quadratic_factors_wavefunctions_phase_i
-        self.linear_factor_id = linear_factor_id
-    
-    def hamiltonian_phase_action_factorized(self, linear_factor):
-        pass
-        
-        
     def capacitance_matrix(self):
         capacitance_matrix = np.zeros((len(self.nodes), len(self.nodes)))
         for element in self.elements:
@@ -249,17 +196,10 @@ class QCircuit:
         return capacitance_matrix
     def inverse_capacitance_matrix(self):
         E,V = np.linalg.eigh(self.capacitance_matrix())
-        #print (E)
-        #print (self.linear_coordinate_transform)
-        #print (V)
         for eigencapacitance_id, eigencapacitance in enumerate(E):
             if np.abs(eigencapacitance)>self.tolerance:
                 E[eigencapacitance_id] = 1/E[eigencapacitance_id]
         return np.einsum('mj,j,lj->ml', np.conj(V), E, V)
-        #T = np.linalg.inv(np.einsum('lj,lk->kj', V, self.linear_coordinate_transform))
-        #print (np.einsum('ji,j,jk->ik', np.conj(V), E, V))
-        #return np.einsum('ji,j,jk->ik', np.conj(V), E, V)
-        
                 
     def calculate_potentials(self):    
         phase_grid = self.create_phase_grid()
@@ -285,11 +225,9 @@ class QCircuit:
                 charge_potential += element.energy_term(node_phases=node_phases, node_charges=node_charges)
             if element.is_phase():
                 phase_potential += element.energy_term(node_phases=node_phases, node_charges=node_charges)
-        #Tinv = np.linalg.pinv(self.linear_coordinate_transform)
         ECmat = 0.5*np.linalg.pinv(np.einsum('ji,jk,kl->il', self.linear_coordinate_transform, self.capacitance_matrix(), self.linear_coordinate_transform))
         self.charge_potential = np.einsum('ij,ik,kj->j', charge_grid, ECmat, charge_grid)
         self.charge_potential = np.reshape(self.charge_potential, grid_shape)
-        #self.charge_potential = charge_potential
         self.phase_potential = phase_potential
         self.invalidation_flag = False
         self.hamiltonian_phase = LinearOperator((grid_size, grid_size), matvec=self.hamiltonian_phase_action)
