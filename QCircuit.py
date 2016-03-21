@@ -295,8 +295,8 @@ class QCircuit:
             node_charges = np.einsum('ij,jk->ik', self.linear_coordinate_transform, charge_grid)[element_node_ids,:]
             node_phases = np.reshape(node_phases, (len(element_node_ids),)+grid_shape) 
             node_charges = np.reshape(node_charges, (len(element_node_ids),)+grid_shape)
-            if element.is_charge():
-                charge_potential += element.energy_term(node_phases=node_phases, node_charges=node_charges)
+            #if element.is_charge():
+            #    charge_potential += element.energy_term(node_phases=node_phases, node_charges=node_charges)
             if element.is_phase():
                 phase_potential += element.energy_term(node_phases=node_phases, node_charges=node_charges)
         ECmat = 0.5*np.linalg.pinv(np.einsum('ji,jk,kl->il', self.linear_coordinate_transform, self.capacitance_matrix(), self.linear_coordinate_transform))
