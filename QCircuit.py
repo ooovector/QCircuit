@@ -305,7 +305,7 @@ class QCircuit:
         self.phase_potential = phase_potential
         self.invalidation_flag = False
         self.hamiltonian_phase = LinearOperator((grid_size, grid_size), matvec=self.hamiltonian_phase_action)
-        self.hamiltonian_charge = LinearOperator((grid_size, grid_size), matvec=self.hamiltonian_charge_action)
+        #self.hamiltonian_charge = LinearOperator((grid_size, grid_size), matvec=self.hamiltonian_charge_action)
         return self.charge_potential, self.phase_potential
     
     def diagonalize_phase(self, num_states=2, use_sparse=True):
