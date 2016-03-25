@@ -3,6 +3,7 @@ A simple Python module to obtain energy levels of superconducting qubits by spar
 """
 
 import numpy as np
+import sympy
 from scipy.sparse.linalg import *
 from abc import ABCMeta
 from abc import abstractmethod
@@ -24,20 +25,20 @@ class QVariable:
         :param nodeNo: number of discrete points on the grid
         :param phase_periods: number of 2pi intervals in the grid
         """
-        
+        self.variable_type = 'variable'
         minNode = np.round(-(nodeNo-1)/2)
         maxNode = np.round((nodeNo-1)/2)
         self.phase_grid = np.linspace(-np.pi*phase_periods, np.pi*phase_periods, nodeNo, endpoint=False)
         self.charge_grid = np.linspace(minNode, maxNode, nodeNo)
-    def set_parameter(self, phase_value, charge_value):
+    def set_parameter(self, phase_value, voltage_value):
         """
         Sets an external flux and/or charge bias.
         :param phase_value: external flux bias in flux quanta/(2pi)
         :param charge_value: external charge bias in cooper pairs
         """
-        
+        self.variable_type = 'parameter'
         self.phase_grid = phase_value
-        self.charge_grid = charge_value
+        self.charge_grid = voltage_value
     def get_phase_grid(self):
         return self.phase_grid
     def get_charge_grid(self):
@@ -91,6 +92,11 @@ class QJosephsonJunction(QCircuitElement):
             raise Exception('ConnectionError', 
                             'Josephson junction {0} has {1} nodes connected instead of 2.'.format(self.name, len(node_phases)))
         return self.critical_current*(1-np.cos(node_phases[0]-node_phases[1]))
+    def symbolic_energy_term(self, node_phases, node_charges):
+        if len(node_phases) != 2:
+            raise Exception('ConnectionError', 
+                            'Josephson junction {0} has {1} nodes connected instead of 2.'.format(self.name, len(node_phases)))
+        return self.critical_current*(1-sympy.cos(node_phases[0]-node_phases[1]))
     def is_phase(self):
         return True
     def is_charge(self):
@@ -108,6 +114,11 @@ class QInductance(QCircuitElement):
     def get_inductance(self):
         return self.inductance
     def energy_term(self, node_phases, node_charges):
+        if len(node_phases) != 2:
+            raise Exception('ConnectionError', 
+                            'Inductance {0} has {1} nodes connected instead of 2.'.format(self.name, len(node_phases)))
+        return (node_phases[0]-node_phases[1])**2/(2*self.inductance)
+    def symbolic_energy_term(self, node_phases, node_charges):
         if len(node_phases) != 2:
             raise Exception('ConnectionError', 
                             'Inductance {0} has {1} nodes connected instead of 2.'.format(self.name, len(node_phases)))
@@ -186,6 +197,7 @@ class QCircuit:
             for node_id, node in enumerate(self.nodes):
                 if node.name == node_name:
                     node_ids.append(node_id)
+        print(node_ids)
         for variable_name in variable_names:
             for variable_id, variable in enumerate(self.variables):
                 if variable.name == variable_name:
@@ -199,7 +211,8 @@ class QCircuit:
                             'Wrong number of nodes in node list. Got {0}, expected {1}'.format(
                                     len(node_ids), len(self.nodes)))
         [variable_idx,node_idx] = np.meshgrid(variable_ids, node_ids)
-        self.linear_coordinate_transform = coefficients[node_idx, variable_idx]
+        self.linear_coordinate_transform = np.zeros(coefficients.shape, coefficients.dtype)
+        self.linear_coordinate_transform[node_idx, variable_idx] = coefficients
         self.invalidation_flag = True
         
     def create_phase_grid(self):
@@ -234,13 +247,16 @@ class QCircuit:
         Tp = np.fft.ifftshift(np.fft.ifftn(np.fft.ifftshift(self.charge_potential*phi))).ravel()
         return Up+Tp
     
-    def capacitance_matrix(self):
+    def capacitance_matrix(self, symbolic=False):
         """
         Calculates the linear capacitance matrix of the circuit with respect 
         to the circuit nodes from the capacitances between them.
         :returns: the capacitance matrix with respect to the nodes, where the rows and columns are sorted accoring to the order in which the nodes are in the nodes attribute.
         """
-        capacitance_matrix = np.zeros((len(self.nodes), len(self.nodes)))
+        if symbolic:
+            capacitance_matrix = sympy.Matrix(np.zeros((len(self.nodes), len(self.nodes))))
+        else:
+            capacitance_matrix = np.zeros((len(self.nodes), len(self.nodes)))
         for element in self.elements:
             if element.is_charge():
                 element_node_ids = []
@@ -252,22 +268,65 @@ class QCircuit:
                 if len(element_node_ids) != 2:
                     raise Exception('VariableError', 
                                     'Wrong number of ports on capacitance, expected 2, got {0}'.format(len(element_node_ids)))
-                capacitance_matrix[element_node_ids[0], element_node_ids[0]] += element.get_capacitance()/2
-                capacitance_matrix[element_node_ids[0], element_node_ids[1]] += -element.get_capacitance()/2
-                capacitance_matrix[element_node_ids[1], element_node_ids[0]] += -element.get_capacitance()/2
-                capacitance_matrix[element_node_ids[1], element_node_ids[1]] += element.get_capacitance()/2
+                capacitance_matrix[element_node_ids[0], element_node_ids[0]] += element.get_capacitance()
+                capacitance_matrix[element_node_ids[0], element_node_ids[1]] += -element.get_capacitance()
+                capacitance_matrix[element_node_ids[1], element_node_ids[0]] += -element.get_capacitance()
+                capacitance_matrix[element_node_ids[1], element_node_ids[1]] += element.get_capacitance()
         return capacitance_matrix
-    def inverse_capacitance_matrix(self):
+    
+    def capacitance_matrix_variables(self, symbolic=False):
         """
-        Calculates the inverse of the capacitance matrix. 
-        Since the capacitance matrix is always at least once degenerate, 
-        the infinite eigenvalues of this matrix are replaced with zero eigenvalues.
+        Calculates the capacitance matrix for the energy term of the qubit Lagrangian in the variable respresentation.
+        """                        
+        
+        if symbolic:
+            C = self.linear_coordinate_transform.T*self.capacitance_matrix(symbolic)*self.linear_coordinate_transform
+            C = sympy.Matrix([sympy.nsimplify(sympy.ratsimp(x)) for x in C]).reshape(*(C.shape))
+        else:
+            C = np.einsum('ji,jk,kl->il', self.linear_coordinate_transform,self.capacitance_matrix(symbolic),self.linear_coordinate_transform)
+        return C
+    
+    def capacitance_matrix_legendre_transform(self, symbolic=False):
         """
-        E,V = np.linalg.eigh(self.capacitance_matrix())
-        for eigencapacitance_id, eigencapacitance in enumerate(E):
-            if np.abs(eigencapacitance)>self.tolerance:
-                E[eigencapacitance_id] = 1/E[eigencapacitance_id]
-        return np.einsum('mj,j,lj->ml', np.conj(V), E, V)
+        Calculates the principle pivot transform of the capacitance matrix in variable representation with respect to "variables" as opposed to "parameters" for the Legendre transform
+        """
+        inverted_indeces = [variable_id for variable_id, variable in enumerate(self.variables) if variable.variable_type=='variable' ]
+        noninverted_indeces = [variable_id for variable_id, variable in enumerate(self.variables) if variable.variable_type=='parameter' ]
+        if symbolic:
+            Aii = self.capacitance_matrix_variables(symbolic)[inverted_indeces, inverted_indeces]
+            Ain = self.capacitance_matrix_variables(symbolic)[inverted_indeces, noninverted_indeces]
+            Ani = self.capacitance_matrix_variables(symbolic)[noninverted_indeces, inverted_indeces]
+            Ann = self.capacitance_matrix_variables(symbolic)[noninverted_indeces, noninverted_indeces]
+            Bii = Aii.inv()
+            Bin = sympy.Matrix(np.zeros(Ain.shape))
+            Bni = sympy.Matrix(np.zeros(Ani.shape))
+            Bnn = Ann-Ani*Aii.inv()*Ain
+            B = sympy.Matrix(np.zeros(self.capacitance_matrix_variables(symbolic).shape))
+        else:
+            Aii = self.capacitance_matrix_variables(symbolic)[np.meshgrid(inverted_indeces, inverted_indeces)].T
+            Ain = self.capacitance_matrix_variables(symbolic)[np.meshgrid(inverted_indeces, noninverted_indeces)].T
+            Ani = self.capacitance_matrix_variables(symbolic)[np.meshgrid(noninverted_indeces, inverted_indeces)].T
+            Ann = self.capacitance_matrix_variables(symbolic)[np.meshgrid(noninverted_indeces, noninverted_indeces)].T
+            Bii = np.linalg.inv(Aii)
+            Bin = np.zeros(Ain.shape)
+            Bni = np.zeros(Ani.shape)
+            Bnn = Ann-np.einsum('ij,jk,kl->il',Ani,np.linalg.inv(Aii),Ain)
+            B = np.empty(self.capacitance_matrix_variables(symbolic).shape)
+        # if sympy could do indexing properly, we would have 3 time less code!!
+        for i1, i2 in enumerate(inverted_indeces):
+            for j1, j2 in enumerate(inverted_indeces):
+                B[j2, i2] = Bii[j1, i1]
+        for i1, i2 in enumerate(noninverted_indeces):
+            for j1, j2 in enumerate(inverted_indeces):
+                B[j2, i2] = Bin[j1, i1]
+        for i1, i2 in enumerate(inverted_indeces):
+            for j1, j2 in enumerate(noninverted_indeces):
+                B[j2, i2] = Bni[j1, i1]
+        for i1, i2 in enumerate(noninverted_indeces):
+            for j1, j2 in enumerate(noninverted_indeces):
+                B[j2, i2] = Bnn[j1, i1]
+        return B
+        
                 
     def calculate_potentials(self):    
         """
@@ -295,11 +354,9 @@ class QCircuit:
             node_charges = np.einsum('ij,jk->ik', self.linear_coordinate_transform, charge_grid)[element_node_ids,:]
             node_phases = np.reshape(node_phases, (len(element_node_ids),)+grid_shape) 
             node_charges = np.reshape(node_charges, (len(element_node_ids),)+grid_shape)
-            #if element.is_charge():
-            #    charge_potential += element.energy_term(node_phases=node_phases, node_charges=node_charges)
             if element.is_phase():
                 phase_potential += element.energy_term(node_phases=node_phases, node_charges=node_charges)
-        ECmat = 0.5*np.linalg.pinv(np.einsum('ji,jk,kl->il', self.linear_coordinate_transform, self.capacitance_matrix(), self.linear_coordinate_transform))
+        ECmat = self.capacitance_matrix_legendre_transform()
         self.charge_potential = np.einsum('ij,ik,kj->j', charge_grid, ECmat, charge_grid)
         self.charge_potential = np.reshape(self.charge_potential, grid_shape)
         self.phase_potential = phase_potential
@@ -319,3 +376,65 @@ class QCircuit:
         wavefunctions = wavefunctions[:,energy_order]
         wavefunctions = np.reshape(wavefunctions, self.charge_potential.shape+(num_states,))
         return energies, wavefunctions
+    
+    def symbolic_lagrangian(self):
+        variable_phase_symbols = []
+        variable_voltage_symbols = []
+        for variable_id, variable in enumerate(self.variables):
+            variable.phase_symbol = sympy.Symbol(variable.name)
+            variable.voltage_symbol = sympy.Symbol('U'+variable.name)
+            variable_phase_symbols.append(variable.phase_symbol)
+            variable_voltage_symbols.append(variable.voltage_symbol)
+        variable_phase_symbols = sympy.Matrix(variable_phase_symbols)
+        variable_voltage_symbols = sympy.Matrix(variable_voltage_symbols)
+        node_phase_symbols = self.linear_coordinate_transform*variable_phase_symbols
+        node_voltage_symbols = self.linear_coordinate_transform*variable_voltage_symbols
+        for node_id, node in enumerate(self.nodes):
+            node.phase_symbol = node_phase_symbols[node_id]
+            node.voltage_symbol = node_voltage_symbols[node_id]
+        kinetic_energy = sympy.nsimplify((0.5*node_voltage_symbols.T*self.capacitance_matrix(symbolic=True)*node_voltage_symbols)[0,0])
+        potential_energy = 0
+        for element in self.elements:
+            if element.is_phase():
+                element_node_phases = []
+                element_node_voltages = []
+                for wire in self.wires:
+                    if wire[0]==element.name:
+                        for node_id, node in enumerate(self.nodes):
+                            if wire[1]==node.name:
+                                element_node_phases.append(sympy.nsimplify(node.phase_symbol))
+                                element_node_voltages.append(sympy.nsimplify(node.voltage_symbol))
+                potential_energy += element.symbolic_energy_term(element_node_phases, 0)
+        return kinetic_energy - potential_energy
+    
+    def symbolic_hamiltonian(self):
+        variable_phase_symbols = []
+        variable_charge_symbols = []
+        for variable_id, variable in enumerate(self.variables):
+            variable.phase_symbol = sympy.Symbol(variable.name)
+            if variable.variable_type=='variable':
+                variable.charge_symbol = sympy.Symbol('n'+variable.name)
+            else:
+                variable.charge_symbol = sympy.Symbol('U'+variable.name)
+            variable_phase_symbols.append(variable.phase_symbol)
+            variable_charge_symbols.append(variable.charge_symbol)
+        variable_phase_symbols = sympy.Matrix(variable_phase_symbols)
+        variable_charge_symbols = sympy.Matrix(variable_charge_symbols)
+
+        node_phase_symbols = self.linear_coordinate_transform*variable_phase_symbols
+        for node_id, node in enumerate(self.nodes):
+            node.phase_symbol = node_phase_symbols[node_id]
+        kinetic_energy = sympy.nsimplify((variable_charge_symbols.T * self.capacitance_matrix_legendre_transform(symbolic=True) * variable_charge_symbols)[0,0])
+        potential_energy = 0
+        for element in self.elements:
+            if element.is_phase():
+                element_node_phases = []
+                element_node_voltages = []
+                for wire in self.wires:
+                    if wire[0]==element.name:
+                        for node_id, node in enumerate(self.nodes):
+                            if wire[1]==node.name:
+                                element_node_phases.append(sympy.nsimplify(node.phase_symbol))
+                potential_energy += element.symbolic_energy_term(element_node_phases, 0)
+        return kinetic_energy + potential_energy
+    
