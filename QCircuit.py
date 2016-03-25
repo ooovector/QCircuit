@@ -197,7 +197,6 @@ class QCircuit:
             for node_id, node in enumerate(self.nodes):
                 if node.name == node_name:
                     node_ids.append(node_id)
-        print(node_ids)
         for variable_name in variable_names:
             for variable_id, variable in enumerate(self.variables):
                 if variable.name == variable_name:
