@@ -297,9 +297,9 @@ class QCircuit:
             Ani = self.capacitance_matrix_variables(symbolic)[noninverted_indeces, inverted_indeces]
             Ann = self.capacitance_matrix_variables(symbolic)[noninverted_indeces, noninverted_indeces]
             Bii = Aii.inv()
-            Bin = sympy.Matrix(np.zeros(Ain.shape))
-            Bni = sympy.Matrix(np.zeros(Ani.shape))
-            Bnn = Ann-Ani*Aii.inv()*Ain
+            Bin = sympy.Matrix(-Aii.inv()*Ain)
+            Bni = sympy.Matrix(-Ani*Aii.inv())
+            Bnn = Ani*Aii.inv()*Ain#-Ann
             B = sympy.Matrix(np.zeros(self.capacitance_matrix_variables(symbolic).shape))
         else:
             Aii = self.capacitance_matrix_variables(symbolic)[np.meshgrid(inverted_indeces, inverted_indeces)].T
@@ -307,9 +307,9 @@ class QCircuit:
             Ani = self.capacitance_matrix_variables(symbolic)[np.meshgrid(noninverted_indeces, inverted_indeces)].T
             Ann = self.capacitance_matrix_variables(symbolic)[np.meshgrid(noninverted_indeces, noninverted_indeces)].T
             Bii = np.linalg.inv(Aii)
-            Bin = np.zeros(Ain.shape)
-            Bni = np.zeros(Ani.shape)
-            Bnn = Ann-np.einsum('ij,jk,kl->il',Ani,np.linalg.inv(Aii),Ain)
+            Bin = -np.dot(np.linalg.inv(Aii),Ain)
+            Bni = -np.dot(Ani,np.linalg.inv(Aii))
+            Bnn = np.einsum('ij,jk,kl->il',Ani,np.linalg.inv(Aii),Ain)#-Ann
             B = np.empty(self.capacitance_matrix_variables(symbolic).shape)
         # if sympy could do indexing properly, we would have 3 time less code!!
         for i1, i2 in enumerate(inverted_indeces):
