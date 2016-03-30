@@ -355,7 +355,7 @@ class QCircuit:
             node_charges = np.reshape(node_charges, (len(element_node_ids),)+grid_shape)
             if element.is_phase():
                 phase_potential += element.energy_term(node_phases=node_phases, node_charges=node_charges)
-        ECmat = self.capacitance_matrix_legendre_transform()
+        ECmat = 0.5*self.capacitance_matrix_legendre_transform()
         self.charge_potential = np.einsum('ij,ik,kj->j', charge_grid, ECmat, charge_grid)
         self.charge_potential = np.reshape(self.charge_potential, grid_shape)
         self.phase_potential = phase_potential
@@ -423,7 +423,7 @@ class QCircuit:
         node_phase_symbols = self.linear_coordinate_transform*variable_phase_symbols
         for node_id, node in enumerate(self.nodes):
             node.phase_symbol = node_phase_symbols[node_id]
-        kinetic_energy = sympy.nsimplify((variable_charge_symbols.T * self.capacitance_matrix_legendre_transform(symbolic=True) * variable_charge_symbols)[0,0])
+        kinetic_energy = 0.5*sympy.nsimplify((variable_charge_symbols.T * self.capacitance_matrix_legendre_transform(symbolic=True) * variable_charge_symbols)[0,0])
         potential_energy = 0
         for element in self.elements:
             if element.is_phase():
