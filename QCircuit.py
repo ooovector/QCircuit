@@ -5,8 +5,13 @@ A simple Python module to obtain energy levels of superconducting qubits by spar
 import numpy as np
 import sympy
 from scipy.sparse.linalg import *
+from scipy.linalg import eigh, eig
 from abc import ABCMeta
 from abc import abstractmethod
+import itertools
+from scipy.optimize import minimize
+
+import matplotlib.pyplot as plt
 
 class QCircuitNode:
     def __init__(self, name):
@@ -19,17 +24,20 @@ class QVariable:
     
     def __init__(self, name):
         self.name = name
-    def create_grid(self, nodeNo, phase_periods):
+    def create_grid(self, nodeNo, phase_periods, centre=0):
         """
         Creates a discrete grid for wavefunction variables.
         :param nodeNo: number of discrete points on the grid
         :param phase_periods: number of 2pi intervals in the grid
         """
         self.variable_type = 'variable'
-        minNode = np.round(-(nodeNo-1)/2)
-        maxNode = np.round((nodeNo-1)/2)
-        self.phase_grid = np.linspace(-np.pi*phase_periods, np.pi*phase_periods, nodeNo, endpoint=False)
-        self.charge_grid = np.linspace(minNode, maxNode, nodeNo)
+        minNode = np.round(-nodeNo/2)
+        maxNode = np.round(nodeNo/2)
+        self.phase_grid = np.linspace(-np.pi*phase_periods+centre, np.pi*phase_periods+centre, nodeNo, endpoint=False)
+        self.charge_grid = np.linspace(minNode/phase_periods, maxNode/phase_periods, nodeNo, endpoint=False)
+        self.phase_step = 2*np.pi*phase_periods/nodeNo
+        self.charge_step = 1.0/phase_periods
+        self.nodeNo = nodeNo
     def set_parameter(self, phase_value, voltage_value):
         """
         Sets an external flux and/or charge bias.
@@ -37,12 +45,21 @@ class QVariable:
         :param charge_value: external charge bias in cooper pairs
         """
         self.variable_type = 'parameter'
-        self.phase_grid = phase_value
-        self.charge_grid = voltage_value
+        self.phase_grid = np.asarray([phase_value])
+        self.charge_grid = np.asarray([voltage_value])
+        self.phase_step = np.inf
+        self.charge_step = np.inf
+        self.nodeNo = 1
     def get_phase_grid(self):
         return self.phase_grid
     def get_charge_grid(self):
         return self.charge_grid
+    def get_phase_step(self):
+        return self.phase_step
+    def get_charge_step(self):
+        return self.charge_step
+    def get_nodeNo(self):
+        return self.nodeNo
 
 class QCircuitElement:
     """
@@ -127,6 +144,29 @@ class QInductance(QCircuitElement):
         return True
     def is_charge(self):
         return False
+
+class QLagrangianCurrentSource(QCircuitElement):
+    """
+    Circuit element representing a Josephson junction.
+    """
+    def __init__(self, name, current=0):
+        self.name = name
+        self.current = current
+    def set_current(self, current):
+        self.current = current
+    def get_current(self):
+        return self.current
+    def energy_term(self, node_phases, node_charges):
+        if len(node_phases) != 2:
+            raise Exception('ConnectionError', 
+                            'Lagrangian current source {0} has {1} nodes connected instead of 2.'.format(self.name, len(node_phases)))
+        return self.current*(node_phases[0]-node_phases[1])
+    def symbolic_energy_term(self, node_phases, node_charges):
+        return self.energy_term(node_phases, node_charges)
+    def is_phase(self):
+        return True
+    def is_charge(self):
+        return False    
     
 class QCircuit:
     """
@@ -144,6 +184,7 @@ class QCircuit:
         self.linear_coordinate_transform = np.asarray(0)
         self.invalidation_flag = True
         self.tolerance = tolerance
+        self.best_permutation_cache = {}
         
     def find_element(self, element_name):
         """
@@ -214,6 +255,9 @@ class QCircuit:
         self.linear_coordinate_transform[node_idx, variable_idx] = coefficients
         self.invalidation_flag = True
         
+    def grid_shape(self):
+        return tuple([v.get_nodeNo() for v in self.variables])
+    
     def create_phase_grid(self):
         """
         Creates a n-d grid of the phase variables, where n is the number of variables in the circuit, on which the circuit wavefunction depends.
@@ -222,7 +266,7 @@ class QCircuit:
         axes = []
         for variable in self.variables:
             axes.append(variable.get_phase_grid())
-        return np.meshgrid(*tuple(axes))
+        return np.meshgrid(*tuple(axes), indexing='ij')
         
     def create_charge_grid(self):
         """
@@ -232,7 +276,7 @@ class QCircuit:
         axes = []
         for variable in self.variables:
             axes.append(variable.get_charge_grid())
-        return np.meshgrid(*tuple(axes))
+        return np.meshgrid(*tuple(axes), indexing='ij')
         
     def hamiltonian_phase_action(self, state_vector):
         """
@@ -326,20 +370,78 @@ class QCircuit:
                 B[j2, i2] = Bnn[j1, i1]
         return B
         
-                
-    def calculate_potentials(self):    
+    def calculate_ndiagonal_hamiltonian(self, d1scheme, d2scheme):
         """
-        Calculates the potential landspace of the circuit hamiltonian in phase and charge representation. 
-        For circuits containing only linear capacitances, the hamiltonian can be seprated into two summands, 
-        one of which is diagonal in phase representation, and the other - in charge representation.
-        :returns: the two potential landscapes, on the wavefunction grid.
+        Calculates the hamiltonian in phase representation in n-diagonal form
+        :param d1scheme: finite difference scheme for first order derivatives
+        :param d2scheme: finite difference scheme for second order derivatives
+        :returns: the m-ndiagonal kinetic operator
         """
+        n = len(d1scheme)
+        if len(d1scheme)!=len(d2scheme):
+            raise Exception('ValueError', 'd1scheme and d2scheme lengths are not equal')
+        if n<3:
+            raise Exception('ValueError', 'dscheme length is less than 3')
+        if (n-1)%2>0:
+            raise Exception('ValueError', 'dscheme length is even')
+            
+        self.ndiagonal_operator = np.zeros(tuple(n*np.ones((len(self.variables),), dtype=int))+self.grid_shape())
+        slice_diagonal = [(n-1)/2 for v in self.variables]+[slice(0, v.get_nodeNo(), 1) for v in self.variables]
+
+        ECmat = -0.5*self.capacitance_matrix_legendre_transform()
+        # d^2/dxi^2 type elements (C*_ii)
+        for i in range(len(self.variables)):
+            EC = ECmat[i,i]
+            for column_id in range(n):
+                slice_column = list(slice_diagonal)
+                slice_column[i] = column_id
+                self.ndiagonal_operator[slice_column] += EC/(self.variables[i].get_phase_step()**2)*d2scheme[column_id]
+        # d^2/dxidxj type elements (C*_ij)
+        for i in range(len(self.variables)):
+            nondiagonal = (x for x in range(len(self.variables)) if x!=i)
+            for j in nondiagonal:
+                EC = ECmat[i,j]
+                for column_id_i in range(n):
+                    for column_id_j in range(n):
+                        slice_column = list(slice_diagonal)
+                        slice_column[i] = column_id_i
+                        slice_column[j] = column_id_j
+                        self.ndiagonal_operator[slice_column] +=  EC/(self.variables[i].get_phase_step()*self.variables[j].get_phase_step())*(d1scheme[column_id_i]*d1scheme[column_id_j])
+                        
+        self.ndiagonal_operator[slice_diagonal] += self.phase_potential
+        
+        self.hamiltonian_ndiagonal = LinearOperator((np.prod(self.grid_shape()), np.prod(self.grid_shape())), matvec=self.ndiagonal_operator_action)
+        return self.ndiagonal_operator
+    
+    def ndiagonal_operator_action(self, psi):
+        diagonal_shape = tuple([1]*len(self.variables))+self.grid_shape()
+        psi = np.reshape(psi, diagonal_shape)
+        action = self.ndiagonal_operator*psi
+        ndiagonal_columns = np.meshgrid(*tuple([range(self.ndiagonal_operator.shape[v_id]) for v_id in range(len(self.variables))]), indexing='ij')
+        ndiagonal_columns = np.reshape(ndiagonal_columns, (len(self.variables), np.prod(self.ndiagonal_operator.shape[0:len(self.variables)])))
+        ndiagonal_shifts = np.meshgrid(*tuple([np.linspace(
+                        -(self.ndiagonal_operator.shape[v_id]-1)/2, 
+                         (self.ndiagonal_operator.shape[v_id]-1)/2, 
+                          self.ndiagonal_operator.shape[v_id], dtype=int) for v_id in range(len(self.variables))]), indexing='ij')
+        ndiagonal_shifts = np.reshape(ndiagonal_shifts, ndiagonal_columns.shape)
+        
+        result = np.zeros(self.grid_shape(), dtype=np.complex)
+        for i in range(np.prod(self.ndiagonal_operator.shape[0:len(self.variables)])):
+            psii = action[tuple(ndiagonal_columns[:, i])+tuple([slice(None, None, None)]*len(self.variables))]
+            for v_id in range(len(self.variables)):
+                psii = np.roll(psii, ndiagonal_shifts[v_id, i], axis=v_id)
+            result += psii
+        return result
+        
+    def calculate_phase_potential(self):
+        """
+        Calculates the potential landspace of the circuit phase-dependent energy in phase representation. 
+        :returns: the phase potential landscape on the wavefunction grid.
+        """
+        grid_shape = self.grid_shape()
+        grid_size = np.prod(grid_shape)
         phase_grid = self.create_phase_grid()
-        charge_grid = self.create_charge_grid()
-        grid_shape = phase_grid[0].shape
-        grid_size = phase_grid[0].size
-        phase_potential = np.zeros(grid_shape)
-        charge_potential = np.zeros(grid_shape)
+        self.phase_potential = np.zeros(grid_shape)
         for element in self.elements:
             element_node_ids = []
             for wire in self.wires:
@@ -348,28 +450,45 @@ class QCircuit:
                         if wire[1]==node.name:
                             element_node_ids.append(node_id)
             phase_grid = np.reshape(np.asarray(phase_grid), (len(self.variables), grid_size))
-            charge_grid = np.reshape(np.asarray(charge_grid), (len(self.variables), grid_size))
             node_phases  = np.einsum('ij,jk->ik', self.linear_coordinate_transform, phase_grid)[element_node_ids, :]
-            node_charges = np.einsum('ij,jk->ik', self.linear_coordinate_transform, charge_grid)[element_node_ids,:]
             node_phases = np.reshape(node_phases, (len(element_node_ids),)+grid_shape) 
-            node_charges = np.reshape(node_charges, (len(element_node_ids),)+grid_shape)
             if element.is_phase():
-                phase_potential += element.energy_term(node_phases=node_phases, node_charges=node_charges)
+                self.phase_potential += element.energy_term(node_phases=node_phases, node_charges=np.zeros(node_phases.shape))
+        return self.phase_potential
+    
+    def calculate_charge_potential(self):
+        """
+        Calculates the potential landspace of the circuit charge-dependent energy in charge representation. 
+        :returns: the charge potential landscape on the wavefunction grid.
+        """
+        grid_shape = self.grid_shape()
+        grid_size = np.prod(grid_shape)
+        charge_grid = np.reshape(np.asarray(self.create_charge_grid()), (len(self.variables), grid_size))
         ECmat = 0.5*self.capacitance_matrix_legendre_transform()
         self.charge_potential = np.einsum('ij,ik,kj->j', charge_grid, ECmat, charge_grid)
         self.charge_potential = np.reshape(self.charge_potential, grid_shape)
-        self.phase_potential = phase_potential
-        self.invalidation_flag = False
-        self.hamiltonian_phase = LinearOperator((grid_size, grid_size), matvec=self.hamiltonian_phase_action)
-        #self.hamiltonian_charge = LinearOperator((grid_size, grid_size), matvec=self.hamiltonian_charge_action)
+        return self.charge_potential
+        
+    def calculate_potentials(self):    
+        """
+        Calculate potentials for Fourier-based hamiltonian action.
+        """
+        
+        self.calculate_phase_potential()
+        self.calculate_charge_potential()
+        self.hamiltonian_Fourier = LinearOperator((np.prod(self.grid_shape()), np.prod(self.grid_shape())),
+                                                matvec=self.hamiltonian_phase_action)
         return self.charge_potential, self.phase_potential
     
-    def diagonalize_phase(self, num_states=2, use_sparse=True):
+    def diagonalize_phase(self, num_states=2, use_sparse=True, hamiltonian_type='Fourier', maxiter=1000):
         """Performs sparse diagonalization of the circuit hamiltonian.
         :param: number of states, starting from the ground state, to be obtained.
         :returns: energies and wavefunctions of the first num_states states.
         """
-        energies, wavefunctions = eigs(self.hamiltonian_phase, k=num_states, which='SR')
+        if hamiltonian_type=='Fourier':
+            energies, wavefunctions = eigs(self.hamiltonian_Fourier, k=num_states, which='SR', maxiter=maxiter)
+        elif hamiltonian_type=='ndiagonal':
+            energies, wavefunctions = eigs(self.hamiltonian_ndiagonal, k=num_states, which='SR', maxiter=maxiter)
         energy_order = np.argsort(np.real(energies))
         energies = energies[energy_order]
         wavefunctions = wavefunctions[:,energy_order]
