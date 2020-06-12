@@ -339,17 +339,17 @@ class QCircuit:
             Aii = self.capacitance_matrix_variables(symbolic)[inverted_indeces, inverted_indeces]
             Ain = self.capacitance_matrix_variables(symbolic)[inverted_indeces, noninverted_indeces]
             Ani = self.capacitance_matrix_variables(symbolic)[noninverted_indeces, inverted_indeces]
-            Ann = self.capacitance_matrix_variables(symbolic)[noninverted_indeces, noninverted_indeces]
+            #Ann = self.capacitance_matrix_variables(symbolic)[noninverted_indeces, noninverted_indeces]
             Bii = Aii.inv()
             Bin = sympy.Matrix(-Aii.inv()*Ain)
             Bni = sympy.Matrix(-Ani*Aii.inv())
             Bnn = Ani*Aii.inv()*Ain#-Ann
             B = sympy.Matrix(np.zeros(self.capacitance_matrix_variables(symbolic).shape))
         else:
-            Aii = self.capacitance_matrix_variables(symbolic)[np.meshgrid(inverted_indeces, inverted_indeces)].T
-            Ain = self.capacitance_matrix_variables(symbolic)[np.meshgrid(inverted_indeces, noninverted_indeces)].T
-            Ani = self.capacitance_matrix_variables(symbolic)[np.meshgrid(noninverted_indeces, inverted_indeces)].T
-            Ann = self.capacitance_matrix_variables(symbolic)[np.meshgrid(noninverted_indeces, noninverted_indeces)].T
+            Aii = self.capacitance_matrix_variables(symbolic)[tuple(np.meshgrid(inverted_indeces, inverted_indeces))].T
+            Ain = self.capacitance_matrix_variables(symbolic)[tuple(np.meshgrid(inverted_indeces, noninverted_indeces))].T
+            Ani = self.capacitance_matrix_variables(symbolic)[tuple(np.meshgrid(noninverted_indeces, inverted_indeces))].T
+            #Ann = self.capacitance_matrix_variables(symbolic)[tuple(np.meshgrid(noninverted_indeces, noninverted_indeces))].T
             Bii = np.linalg.inv(Aii)
             Bin = -np.dot(np.linalg.inv(Aii),Ain)
             Bni = -np.dot(Ani,np.linalg.inv(Aii))
@@ -500,7 +500,7 @@ class QCircuit:
         variable_voltage_symbols = []
         for variable_id, variable in enumerate(self.variables):
             variable.phase_symbol = sympy.Symbol(variable.name)
-            variable.voltage_symbol = sympy.Symbol('U'+variable.name)
+            variable.voltage_symbol = sympy.Symbol('\\partial_t'+variable.name)
             variable_phase_symbols.append(variable.phase_symbol)
             variable_voltage_symbols.append(variable.voltage_symbol)
         variable_phase_symbols = sympy.Matrix(variable_phase_symbols)
@@ -531,9 +531,9 @@ class QCircuit:
         for variable_id, variable in enumerate(self.variables):
             variable.phase_symbol = sympy.Symbol(variable.name)
             if variable.variable_type=='variable':
-                variable.charge_symbol = sympy.Symbol('n'+variable.name)
+                variable.charge_symbol = sympy.I*sympy.Symbol('\\partial_{'+variable.name+'}')
             else:
-                variable.charge_symbol = sympy.Symbol('U'+variable.name)
+                variable.charge_symbol = sympy.Symbol('\\partial_t'+variable.name)
             variable_phase_symbols.append(variable.phase_symbol)
             variable_charge_symbols.append(variable.charge_symbol)
         variable_phase_symbols = sympy.Matrix(variable_phase_symbols)
