@@ -760,10 +760,10 @@ class QCircuit:
                 if i == j:
                     continue
                 for i1, variable in enumerate(subcircuit.variables):
-                    if variable.variable_type == 'parameter':
+                    if variable.variable_type == 'parameter' or not variable.variable_active:
                         continue
                     for i2, variable2 in enumerate(subcircuit2.variables):
-                        if variable2.variable_type == 'parameter':
+                        if variable2.variable_type == 'parameter' or not variable2.variable_active:
                             continue
 
                         h2 = cinv[i1, i2] * np.ones((1, 1), dtype=complex)
