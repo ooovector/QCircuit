@@ -779,6 +779,25 @@ class QCircuit:
                         h += h2
         return h
 
+    def flat_subsystem_state_index(self, nd_state_id):
+        dvec = [len(subsystem.energies) for subsystem in self.subsystems]
+        return sum([nd_state_id[::-1][m]*int(np.prod(dvec[::-1][:m])) for m in range(len(dvec))])
+
+    def find_dressed_state_id(self, eigenvectors, undressed_nd_state_ids, num_states=1):
+        '''
+        From a spectrum of wavefunctions, find the wavefunctions closest to the undressed states
+        '''
+        undressed_state_ids = []
+        for undressed_nd_state_id in undressed_nd_state_ids:
+            undressed_state_ids.append(self.flat_subsystem_state_index(undressed_nd_state_id))
+
+        dressed_state_id = np.argsort(np.sum(np.abs(eigenvectors[undressed_state_ids, :])**2, axis=0))[::-1][:num_states]
+
+        participation_ratio = np.zeros(num_states)
+        for undressed_state_id in undressed_state_ids:
+            participation_ratio += np.abs(eigenvectors[undressed_state_id, dressed_state_id])**2
+        return dressed_state_id, participation_ratio
+
     def __repr__(self):
         return 'QCircuit with {n} nodes, {e} elements, {v} variables and {p} parameters'.format(
             n=len(self.nodes), e=len(self.elements),
