@@ -364,11 +364,41 @@ class QCircuit:
         Tp = np.fft.ifftshift(np.fft.ifftn(np.fft.ifftshift(self.charge_potential*phi))).ravel()
         return Up+Tp
 
+    def inverse_inductance_matrix(self, symbolic=False):
+        """
+        Calculates the linear inverse inductance matrix similar to how 'capacitance_matrix' works.
+        Only linear inductances are contained in the calculation.
+        :returns: the inverse inductance matrix with respect to the nodes,
+        where the rows and columns are sorted according
+        to the order in which the nodes are in the nodes attribute.
+        """
+        if symbolic:
+            inv_inductance_matrix = sympy.Matrix(np.zeros((len(self.nodes), len(self.nodes))))
+        else:
+            inv_inductance_matrix = np.zeros((len(self.nodes), len(self.nodes)))
+        for element in self.elements:
+            if element.is_phase() and hasattr(element, 'get_inductance'):
+                element_node_ids = []
+                for wire in self.wires:
+                    if wire[0] == element.name:
+                        for node_id, node in enumerate(self.nodes):
+                            if wire[1]==node.name:
+                                element_node_ids.append(node_id)
+                if len(element_node_ids) != 2:
+                    raise Exception('VariableError',
+                                    'Wrong number of ports on inductance, expected 2, got {0}'.format(len(element_node_ids)))
+                inv_inductance_matrix[element_node_ids[0], element_node_ids[0]] += 1/element.get_inductance()
+                inv_inductance_matrix[element_node_ids[0], element_node_ids[1]] += -1/element.get_inductance()
+                inv_inductance_matrix[element_node_ids[1], element_node_ids[0]] += -1/element.get_inductance()
+                inv_inductance_matrix[element_node_ids[1], element_node_ids[1]] += 1/element.get_inductance()
+        return inv_inductance_matrix
+
     def capacitance_matrix(self, symbolic=False):
         """
         Calculates the linear capacitance matrix of the circuit with respect
         to the circuit nodes from the capacitances between them.
-        :returns: the capacitance matrix with respect to the nodes, where the rows and columns are sorted accoring to the order in which the nodes are in the nodes attribute.
+        :returns: the capacitance matrix with respect to the nodes, where the rows and columns are sorted according
+        to the order in which the nodes are in the nodes attribute.
         """
         if symbolic:
             capacitance_matrix = sympy.Matrix(np.zeros((len(self.nodes), len(self.nodes))))
@@ -390,6 +420,21 @@ class QCircuit:
                 capacitance_matrix[element_node_ids[1], element_node_ids[0]] += -element.get_capacitance()
                 capacitance_matrix[element_node_ids[1], element_node_ids[1]] += element.get_capacitance()
         return capacitance_matrix
+
+    def inverse_inductance_matrix_variables(self, symbolic=False):
+        """
+        Calculates the capacitance matrix for the energy term of the qubit Lagrangian in the variable respresentation.
+        """
+
+        if symbolic:
+            l = self.linear_coordinate_transform.T*self.inverse_inductance_matrix(symbolic)*self.linear_coordinate_transform
+            l = sympy.Matrix([sympy.nsimplify(sympy.ratsimp(x)) for x in l]).reshape(*(l.shape))
+        else:
+            l = np.einsum('ji,jk,kl->il',
+                          self.linear_coordinate_transform,
+                          self.inverse_inductance_matrix(symbolic),
+                          self.linear_coordinate_transform)
+        return l
 
     def capacitance_matrix_variables(self, symbolic=False):
         """
@@ -660,22 +705,28 @@ class QCircuit:
                                                                           axes=axes),
                                                           norm='ortho', axes=axes)
                                                , axes=axes)
-        charge_variable = variable.get_charge_grid()
 
-        wavefunctions_charge = wavefunctions_charge.reshape((-1, wavefunctions_charge.shape[-1]))
-        charge_variable = charge_variable.reshape((-1, charge_variable.shape[-1]))
+        wavefunctions_charge_i = wavefunctions_charge.reshape(list(wavefunctions_charge.shape) + [1])  # ..., i, 1
+        wavefunctions_charge_j = wavefunctions_charge.reshape(list(wavefunctions_charge.shape[:-1]) + [1, wavefunctions_charge.shape[-1]])  # ..., 1, j
 
-        n = (np.conj(wavefunctions_charge.T)*charge_variable)@wavefunctions_charge
+        charge_variable = self.create_charge_grid()[self.variables.index(variable)]
+        charge_variable_ij = charge_variable.reshape(list(charge_variable.shape) + [1, 1])
+
+        n = np.sum(np.conj(wavefunctions_charge_i) * charge_variable_ij * wavefunctions_charge_j, axis=tuple(axes))
+
         self.charge_operators[variable.name] = n
         return n
 
     def get_phase_operator(self, wavefunctions, variable):
-        phase_variable = variable.get_phase_grid()
+        axes = np.arange(len(wavefunctions.shape) - 1)
+        wavefunctions_phase_i = wavefunctions.reshape(list(wavefunctions.shape) + [1])  # ..., i, 1
+        wavefunctions_phase_j = wavefunctions.reshape(
+            list(wavefunctions.shape[:-1]) + [1, wavefunctions.shape[-1]])  # ..., 1, j
 
-        wavefunctions_phase = wavefunctions.reshape((-1, wavefunctions.shape[-1]))
-        charge_variable = phase_variable.reshape((-1, phase_variable.shape[-1]))
+        phase_variable = self.create_phase_grid()[self.variables.index(variable)]
+        phase_variable_ij = phase_variable.reshape(list(phase_variable.shape) + [1, 1])
 
-        phi = (np.conj(wavefunctions_phase.T)*charge_variable)@wavefunctions_phase
+        phi = np.sum(np.conj(wavefunctions_phase_i) * phase_variable_ij * wavefunctions_phase_j, axis=tuple(axes))
         self.phase_operators[variable.name] = phi
         return phi
 
@@ -754,6 +805,8 @@ class QCircuit:
         # nondiagonal parts of hamiltonian (charge-coupled)
 
         cinv = 0.5 * self.capacitance_matrix_legendre_transform()
+        linv = 0.5 * self.inverse_inductance_matrix_variables()
+
         # off-diagonal part of hamiltonian
         for i, subcircuit in enumerate(self.subsystems):
             for j, subcircuit2 in enumerate(self.subsystems):
@@ -767,16 +820,20 @@ class QCircuit:
                             continue
 
                         h2 = cinv[i1, i2] * np.ones((1, 1), dtype=complex)
+                        h3 = linv[i1, i2] * np.ones((1, 1), dtype=complex)
 
                         for k, subcircuit3 in enumerate(self.subsystems):
                             if i == k:
                                 h2 = np.kron(h2, subcircuit3.charge_operators[variable.name])
+                                h3 = np.kron(h3, subcircuit3.phase_operators[variable.name])
                             elif j == k:
                                 h2 = np.kron(h2, subcircuit3.charge_operators[variable2.name])
+                                h3 = np.kron(h3, subcircuit3.phase_operators[variable2.name])
                             else:
                                 h2 = np.kron(h2, np.identity(len(subcircuit3.energies)))
+                                h3 = np.kron(h3, np.identity(len(subcircuit3.energies)))
 
-                        h += h2
+                        h += (h2 + h3)
         return h
 
     def flat_subsystem_state_index(self, nd_state_id):
