@@ -411,10 +411,11 @@ class QCircuit:
         """
         inverted_indeces = [variable_id for variable_id, variable in enumerate(self.variables) if variable.variable_type=='variable' ]
         noninverted_indeces = [variable_id for variable_id, variable in enumerate(self.variables) if variable.variable_type=='parameter' ]
+        c = self.capacitance_matrix_variables(symbolic)
         if symbolic:
-            Aii = self.capacitance_matrix_variables(symbolic)[inverted_indeces, inverted_indeces]
-            Ain = self.capacitance_matrix_variables(symbolic)[inverted_indeces, noninverted_indeces]
-            Ani = self.capacitance_matrix_variables(symbolic)[noninverted_indeces, inverted_indeces]
+            Aii = c[inverted_indeces, inverted_indeces]
+            Ain = c[inverted_indeces, noninverted_indeces]
+            Ani = c[noninverted_indeces, inverted_indeces]
             #Ann = self.capacitance_matrix_variables(symbolic)[noninverted_indeces, noninverted_indeces]
             Bii = Aii.inv()
             Bin = sympy.Matrix(-Aii.inv()*Ain)
@@ -422,9 +423,13 @@ class QCircuit:
             Bnn = Ani*Aii.inv()*Ain#-Ann
             B = sympy.Matrix(np.zeros(self.capacitance_matrix_variables(symbolic).shape))
         else:
-            Aii = self.capacitance_matrix_variables(symbolic)[tuple(np.meshgrid(inverted_indeces, inverted_indeces))].T
-            Ain = self.capacitance_matrix_variables(symbolic)[tuple(np.meshgrid(inverted_indeces, noninverted_indeces))].T
-            Ani = self.capacitance_matrix_variables(symbolic)[tuple(np.meshgrid(noninverted_indeces, inverted_indeces))].T
+            Aii = c[tuple(np.meshgrid(inverted_indeces, inverted_indeces))].T
+            if len(noninverted_indeces) > 0 and len(inverted_indeces) > 0:
+                Ain = c[tuple(np.meshgrid(inverted_indeces, noninverted_indeces))].T
+                Ani = c[tuple(np.meshgrid(noninverted_indeces, inverted_indeces))].T
+            else:
+                Ain = np.zeros((len(inverted_indeces), len(noninverted_indeces)), c.dtype)
+                Ani = np.zeros((len(noninverted_indeces), len(inverted_indeces)), c.dtype)
             #Ann = self.capacitance_matrix_variables(symbolic)[tuple(np.meshgrid(noninverted_indeces, noninverted_indeces))].T
             Bii = np.linalg.inv(Aii)
             Bin = -np.dot(np.linalg.inv(Aii), Ain)
